@@ -245,7 +245,7 @@ class REPLManager:
     4. Special function interception (llm_query, FINAL, FINAL_VAR)
     """
 
-    STATE_FILE = "/workspace/.rlm_state.pkl"
+    STATE_FILE = "/workspace/.rlm_state.json"
     CODE_FILE = "/workspace/.rlm_code.py"
     OUTPUT_FILE = "/workspace/.rlm_output.txt"
 
@@ -320,61 +320,56 @@ class REPLManager:
 
         # Initialize Python environment with context
         init_code = f'''
-import pickle
+import json
 import sys
 
-# Initialize RLM state
-class RLMEnvironment:
-    def __init__(self):
-        self.context = ""
-        self.context_type = ""
-        self.context_total_length = 0
-        self.results = []
-        self.llm_calls = []
-        self.final_answer = None
-        self.final_var = None
-
-env = RLMEnvironment()
-env.context = {repr(context)}
-env.context_type = {repr(context_type)}
-env.context_total_length = {len(context)}
+# Initialize RLM state as dict (JSON-serializable, avoids security issues)
+env = {{
+    "context": {repr(context)},
+    "context_type": {repr(context_type)},
+    "context_total_length": {len(context)},
+    "results": [],
+    "llm_calls": [],
+    "final_answer": None,
+    "final_var": None
+}}
 
 # Expose variables at module level
-context = env.context
-context_type = env.context_type
-context_total_length = env.context_total_length
-results = env.results
+context = env["context"]
+context_type = env["context_type"]
+context_total_length = env["context_total_length"]
+results = env["results"]
 
 def llm_query(query: str, content: str) -> str:
     """Make a recursive LLM call. Returns result if available, else placeholder."""
     # Check if we already have a result for this call index
-    call_idx = len(env.llm_calls)
-    if hasattr(env, 'results') and call_idx < len(env.results):
+    call_idx = len(env["llm_calls"])
+    if call_idx < len(env["results"]):
         # Result already available from previous execution
-        return env.results[call_idx]
+        return env["results"][call_idx]
     # Otherwise, register the call and return placeholder
-    env.llm_calls.append((query, content))
-    return f"[LLM_CALL_PENDING:{{len(env.llm_calls)-1}}]"
+    env["llm_calls"].append([query, content])
+    return f"[LLM_CALL_PENDING:{{len(env['llm_calls'])-1}}]"
 
 def FINAL(answer: str):
     """Submit final answer."""
-    env.final_answer = str(answer)
-    print(f"[FINAL_ANSWER]{{env.final_answer}}")
+    env["final_answer"] = str(answer)
+    print(f"[FINAL_ANSWER]{{env['final_answer']}}")
 
 def FINAL_VAR(var_name: str):
     """Submit variable value as final answer."""
-    env.final_var = var_name
+    env["final_var"] = var_name
     if var_name in globals():
-        env.final_answer = str(globals()[var_name])
+        env["final_answer"] = str(globals()[var_name])
     elif var_name in locals():
-        env.final_answer = str(locals()[var_name])
+        env["final_answer"] = str(locals()[var_name])
     else:
-        env.final_answer = f"[ERROR: Variable '{{var_name}}' not found]"
-    print(f"[FINAL_ANSWER]{{env.final_answer}}")
+        env["final_answer"] = f"[ERROR: Variable '{{var_name}}' not found]"
+    print(f"[FINAL_ANSWER]{{env['final_answer']}}")
 
-# Save state
-with open("{self.STATE_FILE}", "wb") as f:
-    pickle.dump(env, f)
+# Save state as JSON
+with open("{self.STATE_FILE}", "w") as f:
+    json.dump(env, f)
 
 print("[RLM_INIT_SUCCESS]")
 print(f"Context loaded: {{len(context):,}} characters")
@@ -413,57 +408,46 @@ print(f"Context loaded: {{len(context):,}} characters")
 
         # Wrap code to load state, execute from file, and save state
         wrapped_code = f'''
-import pickle
+import json
 import sys
 from io import StringIO
 
-# Define class BEFORE loading pickle (pickle needs the class definition)
-class RLMEnvironment:
-    def __init__(self):
-        self.context = ""
-        self.context_type = ""
-        self.context_total_length = 0
-        self.results = []
-        self.llm_calls = []
-        self.final_answer = None
-        self.final_var = None
-
-# Load state
-with open("{self.STATE_FILE}", "rb") as f:
-    env = pickle.load(f)
+# Load state from JSON
+with open("{self.STATE_FILE}", "r") as f:
+    env = json.load(f)
 
 # Restore globals
-context = env.context
-context_type = env.context_type
-context_total_length = env.context_total_length
-results = env.results
+context = env["context"]
+context_type = env["context_type"]
+context_total_length = env["context_total_length"]
+results = env["results"]
 
 def llm_query(query: str, content: str) -> str:
     """Make a recursive LLM call. Returns result if available, else placeholder."""
     # Check if we already have a result for this call index
-    call_idx = len(env.llm_calls)
-    if hasattr(env, 'results') and call_idx < len(env.results):
+    call_idx = len(env["llm_calls"])
+    if call_idx < len(env["results"]):
         # Result already available from previous execution
-        return env.results[call_idx]
+        return env["results"][call_idx]
     # Otherwise, register the call and return placeholder
-    env.llm_calls.append((query, content))
-    return f"[LLM_CALL_PENDING:{{len(env.llm_calls)-1}}]"
+    env["llm_calls"].append([query, content])
+    return f"[LLM_CALL_PENDING:{{len(env['llm_calls'])-1}}]"
 
 def FINAL(answer: str):
     """Submit final answer."""
-    env.final_answer = str(answer)
-    print(f"[FINAL_ANSWER]{{env.final_answer}}")
+    env["final_answer"] = str(answer)
+    print(f"[FINAL_ANSWER]{{env['final_answer']}}")
 
 def FINAL_VAR(var_name: str):
     """Submit variable value as final answer."""
-    env.final_var = var_name
+    env["final_var"] = var_name
     # Try to get from current namespace
     try:
-        val = eval(var_name)
-        env.final_answer = str(val)
+        val = globals().get(var_name) or locals().get(var_name)
+        env["final_answer"] = str(val) if val is not None else f"[ERROR: Variable '{{var_name}}' not found]"
     except:
-        env.final_answer = f"[ERROR: Variable '{{var_name}}' not found]"
-    print(f"[FINAL_ANSWER]{{env.final_answer}}")
+        env["final_answer"] = f"[ERROR: Variable '{{var_name}}' not found]"
+    print(f"[FINAL_ANSWER]{{env['final_answer']}}")
 
 # Capture output
 _old_stdout = sys.stdout
@@ -482,14 +466,14 @@ _output = _captured.getvalue()
 print(_output)
 
 # Report pending LLM calls
-if env.llm_calls:
-    print(f"[PENDING_LLM_CALLS:{{len(env.llm_calls)}}]")
-    for i, (q, c) in enumerate(env.llm_calls):
+if env["llm_calls"]:
+    print(f"[PENDING_LLM_CALLS:{{len(env['llm_calls'])}}]")
+    for i, (q, c) in enumerate(env["llm_calls"]):
         print(f"[LLM_CALL:{{i}}:{{len(c)}}]")
 
-# Save state
-with open("{self.STATE_FILE}", "wb") as f:
-    pickle.dump(env, f)
+# Save state as JSON
+with open("{self.STATE_FILE}", "w") as f:
+    json.dump(env, f)
 '''
 
         # Inject user code to separate file first (avoids escaping issues)
@@ -622,27 +606,17 @@ with open("{self.STATE_FILE}", "wb") as f:
             return True
 
         inject_code = f'''
-import pickle
+import json
 import re
 
-# Define class BEFORE loading pickle
-class RLMEnvironment:
-    def __init__(self):
-        self.context = ""
-        self.context_type = ""
-        self.context_total_length = 0
-        self.results = []
-        self.llm_calls = []
-        self.final_answer = None
-        self.final_var = None
+# Load state from JSON
+with open("{self.STATE_FILE}", "r") as f:
+    env = json.load(f)
 
-with open("{self.STATE_FILE}", "rb") as f:
-    env = pickle.load(f)
-
-# Store the actual results in env.results for access
+# Store the actual results in env["results"] for access
 llm_results = {repr(results)}
-env.results = llm_results
-env.llm_calls = []  # Clear pending calls
+env["results"] = llm_results
+env["llm_calls"] = []  # Clear pending calls
 
 # Make results available as llm_result_N and also in results list
 for i, result in enumerate(llm_results):
@@ -662,8 +636,8 @@ for var_name, var_value in list(globals().items()):
 # Also update results variable in global scope
 results = llm_results
 
-with open("{self.STATE_FILE}", "wb") as f:
-    pickle.dump(env, f)
+with open("{self.STATE_FILE}", "w") as f:
+    json.dump(env, f)
 
 print(f"[INJECTED_RESULTS:{{len(llm_results)}}]")
 for i, r in enumerate(llm_results):
@@ -749,7 +723,7 @@ for i, r in enumerate(llm_results):
 
         Uses a fresh container with the code file mounted.
         """
-        import subprocess
+        import asyncio
         import tempfile
 
         # Create a temp directory to share with container
@@ -760,7 +734,7 @@ for i, r in enumerate(llm_results):
             shutil.copy(code_path, f"{tmpdir}/code.py")
 
             # Copy existing state if any
-            state_file = f"{tmpdir}/rlm_state.pkl"
+            state_file = f"{tmpdir}/rlm_state.json"
             if hasattr(self, "_direct_state_data"):
                 with open(state_file, "wb") as f:
                     f.write(self._direct_state_data)
@@ -769,16 +743,22 @@ for i, r in enumerate(llm_results):
             with open(f"{tmpdir}/code.py") as f:
                 code = f.read()
 
-            code = code.replace(self.STATE_FILE, "/workspace/rlm_state.pkl")
+            code = code.replace(self.STATE_FILE, "/workspace/rlm_state.json")
 
             with open(f"{tmpdir}/code.py", "w") as f:
                 f.write(code)
 
-            # Run Docker container
+            # Run Docker container with security hardening
             cmd = [
                 "docker",
                 "run",
                 "--rm",
+                "--network=none",  # Prevent data exfiltration
+                "--cap-drop=ALL",  # Drop all capabilities
+                "--memory=4g",  # Resource limit
+                "--read-only",  # Read-only root filesystem
+                "--tmpfs=/tmp:size=100m",  # Writable tmp with size limit
+                "--security-opt=no-new-privileges:true",  # Prevent privilege escalation
                 "-v",
                 f"{tmpdir}:/workspace",
                 "-w",
@@ -789,25 +769,30 @@ for i, r in enumerate(llm_results):
             ]
 
             try:
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                    proc.communicate(),
                     timeout=self.config.exec_timeout,
                 )
+                stdout = stdout_bytes.decode() if stdout_bytes else ""
+                stderr = stderr_bytes.decode() if stderr_bytes else ""
 
-                output = result.stdout
-                if result.stderr:
-                    output += f"\n[STDERR]\n{result.stderr}"
+                output = stdout
+                if stderr:
+                    output += f"\n[STDERR]\n{stderr}"
 
                 # Save state for next execution
                 if os.path.exists(state_file):
                     with open(state_file, "rb") as f:
                         self._direct_state_data = f.read()
 
-                return result.returncode == 0, output
+                return proc.returncode == 0, output
 
-            except subprocess.TimeoutExpired:
+            except asyncio.TimeoutError:
                 return False, f"[TIMEOUT] Execution exceeded {self.config.exec_timeout}s"
             except Exception as e:
                 return False, f"[DOCKER_ERROR] {e}"
@@ -904,7 +889,7 @@ for i, r in enumerate(llm_results):
 
         Uses a fresh container for each execution with mounted temp files.
         """
-        import subprocess
+        import asyncio
         import tempfile
 
         # Create a temp directory to share with container
@@ -916,7 +901,7 @@ for i, r in enumerate(llm_results):
             shutil.copy(user_code_path, f"{tmpdir}/user_code.py")
 
             # Create state file path
-            state_file = f"{tmpdir}/rlm_state.pkl"
+            state_file = f"{tmpdir}/rlm_state.json"
 
             # Copy existing state if any
             if hasattr(self, "_direct_state_data"):
@@ -928,17 +913,23 @@ for i, r in enumerate(llm_results):
                 wrapper_code = f.read()
 
             # Replace paths to use /workspace mount
-            wrapper_code = wrapper_code.replace(self.STATE_FILE, "/workspace/rlm_state.pkl")
+            wrapper_code = wrapper_code.replace(self.STATE_FILE, "/workspace/rlm_state.json")
             wrapper_code = wrapper_code.replace(container_user_path, "/workspace/user_code.py")
 
             with open(f"{tmpdir}/wrapper.py", "w") as f:
                 f.write(wrapper_code)
 
-            # Run Docker container
+            # Run Docker container with security hardening
             cmd = [
                 "docker",
                 "run",
                 "--rm",
+                "--network=none",  # Prevent data exfiltration
+                "--cap-drop=ALL",  # Drop all capabilities
+                "--memory=4g",  # Resource limit
+                "--read-only",  # Read-only root filesystem
+                "--tmpfs=/tmp:size=100m",  # Writable tmp with size limit
+                "--security-opt=no-new-privileges:true",  # Prevent privilege escalation
                 "-v",
                 f"{tmpdir}:/workspace",
                 "-w",
@@ -949,25 +940,30 @@ for i, r in enumerate(llm_results):
             ]
 
             try:
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                    proc.communicate(),
                     timeout=self.config.exec_timeout,
                 )
+                stdout = stdout_bytes.decode() if stdout_bytes else ""
+                stderr = stderr_bytes.decode() if stderr_bytes else ""
 
-                output = result.stdout
-                if result.stderr:
-                    output += f"\n[STDERR]\n{result.stderr}"
+                output = stdout
+                if stderr:
+                    output += f"\n[STDERR]\n{stderr}"
 
                 # Save state for next execution
                 if os.path.exists(state_file):
                     with open(state_file, "rb") as f:
                         self._direct_state_data = f.read()
 
-                return result.returncode == 0, output
+                return proc.returncode == 0, output
 
-            except subprocess.TimeoutExpired:
+            except asyncio.TimeoutError:
                 return False, f"[TIMEOUT] Execution exceeded {self.config.exec_timeout}s"
             except Exception as e:
                 return False, f"[DOCKER_ERROR] {e}"
@@ -975,25 +971,14 @@ for i, r in enumerate(llm_results):
     async def _get_pending_llm_calls(self) -> list[tuple[str, str]]:
         """Retrieve pending LLM calls from the container state."""
         extract_code = f'''
-import pickle
 import json
 
-# Define class BEFORE loading pickle
-class RLMEnvironment:
-    def __init__(self):
-        self.context = ""
-        self.context_type = ""
-        self.context_total_length = 0
-        self.results = []
-        self.llm_calls = []
-        self.final_answer = None
-        self.final_var = None
-
-with open("{self.STATE_FILE}", "rb") as f:
-    env = pickle.load(f)
+# Load state from JSON
+with open("{self.STATE_FILE}", "r") as f:
+    env = json.load(f)
 
 # Output calls as JSON for parsing
-calls = [(q, c) for q, c in env.llm_calls]
+calls = [(q, c) for q, c in env["llm_calls"]]
 print("[LLM_CALLS_JSON]")
 print(json.dumps(calls))
 print("[/LLM_CALLS_JSON]")
