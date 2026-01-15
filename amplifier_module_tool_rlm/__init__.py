@@ -5,25 +5,24 @@ Implements the RLM algorithm from Zhang, Kraska, Khattab (MIT CSAIL, 2025)
 for processing arbitrarily long contexts via a Python REPL environment.
 
 Key Design Points:
-- Uses shadow tool for isolated Python REPL execution
+- Uses Docker containers for isolated Python REPL execution
 - Supports recursive LLM sub-calls for divide-and-conquer processing
 - Implements cost controls and depth limits for safety
 - Emits observable events for monitoring and debugging
 
 ASSUMPTIONS:
-1. Shadow tool is available via coordinator.get("tools").get("shadow")
+1. Docker is available on the host system
 2. At least one provider is available via coordinator.get("providers")
-3. Docker is available on the host system
-4. Network access for provider API calls
+3. Network access for provider API calls
 
 CONDITIONS FOR SUCCESS:
-1. Shadow bundle installed and Docker available
+1. Docker daemon running
 2. At least one provider mounted
 3. Content fits in container memory (default 4GB)
 4. Network available for API calls
 
 ERROR CASES HANDLED:
-1. Shadow tool not available -> Clear error message
+1. Docker not available -> Clear error message
 2. Provider not available -> Clear error message
 3. Container creation fails -> Docker error reported
 4. Code execution timeout -> Partial results + timeout error
@@ -36,6 +35,17 @@ from __future__ import annotations
 
 __amplifier_module_type__ = "tool"
 
+__all__ = [
+    "mount",
+    "RLMConfig",
+    "RLMTool",
+    "REPLManager",
+    "RLMState",
+    "TrajectoryStep",
+    "TrajectoryStepType",
+]
+
+import atexit
 import json
 import logging
 import os
@@ -48,14 +58,18 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
-# Debug logging to file for tracing
+# Debug logging to file for tracing (with proper cleanup)
 _DEBUG_LOG = os.environ.get("RLM_DEBUG_LOG", "")
+_debug_fh = None
+
 if _DEBUG_LOG:
     _debug_fh = open(_DEBUG_LOG, "a")
+    atexit.register(lambda: _debug_fh.close() if _debug_fh else None)
 
     def _debug(msg: str) -> None:
-        _debug_fh.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
-        _debug_fh.flush()
+        if _debug_fh:
+            _debug_fh.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
+            _debug_fh.flush()
 else:
 
     def _debug(msg: str) -> None:
@@ -79,18 +93,22 @@ class RLMConfig(BaseModel):
     # Execution limits
     max_recursion_depth: int = Field(
         default=5,
+        ge=1,
         description="Maximum depth of recursive LLM sub-calls",
     )
     max_llm_calls: int = Field(
         default=100,
+        ge=1,
         description="Maximum total LLM calls (cost control)",
     )
     max_trajectory_steps: int = Field(
         default=50,
+        ge=1,
         description="Maximum steps in the REPL trajectory",
     )
     exec_timeout: int = Field(
         default=60,
+        ge=1,
         description="Timeout in seconds for each code execution",
     )
 
@@ -102,12 +120,6 @@ class RLMConfig(BaseModel):
     default_model: str | None = Field(
         default=None,
         description="Default model (uses provider default if not set)",
-    )
-
-    # Token estimation (for chunking decisions)
-    chars_per_token: float = Field(
-        default=4.0,
-        description="Approximate characters per token for estimation",
     )
 
 

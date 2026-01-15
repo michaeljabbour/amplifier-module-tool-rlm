@@ -237,3 +237,73 @@ amplifier-module-tool-rlm/
 ## License
 
 MIT License - See LICENSE file for details.
+
+## Troubleshooting
+
+### Docker not running
+
+```
+Error: Docker not available or not running
+```
+
+**Solution**: Ensure Docker daemon is running:
+```bash
+docker ps  # Should return without error
+```
+
+### Provider not configured
+
+```
+Error: Provider 'anthropic' not found
+```
+
+**Solution**: Ensure your bundle includes a provider module:
+```yaml
+providers:
+  - module: provider-anthropic
+    source: git+https://github.com/microsoft/amplifier-module-provider-anthropic@main
+```
+
+### Container timeout
+
+```
+Error: Code execution timed out
+```
+
+**Solution**: Increase the execution timeout in config:
+```yaml
+tools:
+  - module: tool-rlm
+    config:
+      exec_timeout: 120  # Increase from default 60s
+```
+
+### Max LLM calls exceeded
+
+```
+Warning: Max LLM calls (100) reached
+```
+
+**Solution**: For very large documents, increase the limit:
+```yaml
+tools:
+  - module: tool-rlm
+    config:
+      max_llm_calls: 200  # Increase budget
+```
+
+### Query returns no results
+
+If RLM returns empty or incorrect results:
+1. **Be more specific** - Vague queries work poorly
+2. **Check document format** - Ensure content is readable text
+3. **Try smaller chunks** - Very dense documents may need multiple passes
+
+### Debug mode
+
+Enable debug logging for troubleshooting:
+```bash
+export RLM_DEBUG_LOG=/tmp/rlm_debug.log
+amplifier
+# After session, check: cat /tmp/rlm_debug.log
+```
